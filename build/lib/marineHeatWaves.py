@@ -15,6 +15,65 @@ from datetime import date
 import xarray as xr
 
 
+def mhws_plot(mhws):
+    ts = date(1992, 1, 1).toordinal()
+    te = date(2017, 12, 1).toordinal()
+    plt.figure(figsize=(15, 7))
+    plt.subplot(2, 2, 1)
+    evMax = np.argmax(mhws['duration'])
+    plt.bar(mhws['date_peak'], mhws['duration'], width=150, color=(0.7, 0.7, 0.7))
+    plt.bar(mhws['date_peak'][evMax], mhws['duration'][evMax], width=150, color=col_bar)
+    plt.xlim(ts, te)
+    plt.ylim(0,50)
+    plt.ylabel('[days]')
+    plt.title('Duration')
+    plt.subplot(2, 2, 2)
+    evMax = np.argmax(np.abs(mhws['intensity_max']))
+    plt.bar(mhws['date_peak'], mhws['intensity_max'], width=150, color=(0.7, 0.7, 0.7))
+    plt.bar(mhws['date_peak'][evMax], mhws['intensity_max'][evMax], width=150, color=col_bar)
+    plt.xlim(ts, te)
+    plt.ylim(0, 2.6)
+    plt.ylabel(r'[$^\circ$C]')
+    plt.title('Maximum Intensity')
+    plt.subplot(2, 2, 4)
+    evMax = np.argmax(np.abs(mhws['intensity_mean']))
+    plt.bar(mhws['date_peak'], mhws['intensity_mean'], width=150, color=(0.7, 0.7, 0.7))
+    plt.bar(mhws['date_peak'][evMax], mhws['intensity_mean'][evMax], width=150, color=col_bar)
+    plt.xlim(ts, te)
+    plt.ylim(0, 1.8)
+    plt.title('Mean Intensity')
+    plt.ylabel(r'[$^\circ$C]')
+    plt.subplot(2, 2, 3)
+    evMax = np.argmax(np.abs(mhws['intensity_cumulative']))
+    plt.bar(mhws['date_peak'], mhws['intensity_cumulative'], width=150, color=(0.7, 0.7, 0.7))
+    plt.bar(mhws['date_peak'][evMax], mhws['intensity_cumulative'][evMax], width=150, color=col_bar)
+    plt.xlim(ts, te)
+    plt.ylim(0, 65)
+    plt.title(r'Cumulative Intensity')
+    plt.ylabel(r'[$^\circ$C$\times$days]')
+#
+def monthly_blocks(mhws,clim,time,ts_sst):
+    block = {}
+    is_mhw = np.zeros(np.shape(time))
+    for n in range(mhws['n_events']):
+        in_n = np.where((time>=mhws['time_start'][n])*(time<=mhws['time_end'][n]))[0]
+        is_mhw[in_n] = 1
+    anom = (ts_sst - clim['thresh'])*is_mhw
+    years = np.arange(date.fromordinal(time[0]).year,date.fromordinal(time[-1]).year + 1)
+    n_months = 12*len(years)
+    block['total_days'] = np.zeros(n_months)
+    block['intens_mean'] = np.full(n_months,np.nan)
+    block['intens_cum'] = np.full(n_months,np.nan)
+    in_times = np.array([date(year,month,1).toordinal() for year in years for month in range(1,13)])
+    in_times = np.concatenate(in_times,date(years[-1]+1,1,1).toordinal())
+    for n_block in range(len(in_times)-1):
+        in_t = np.where((time>=in_times[n_block])*(time<in_times[n_block+1]))[0]
+        block['total_days'][n_block] = np.sum(is_mhw[in_t])
+        block['intens_cum'][n_block] = np.sum(anom[in_t])
+        if not (block['total_days'][n_block]==0):
+            block['intens_mean'][n_block] = block['intens_cum'][n_block]/block['total_days'][n_block]
+    return block
+
 def dict2Dataset(dicts,name='mhws'):
     '''
 
@@ -449,276 +508,6 @@ def detect(t, temp, climatologyPeriod=[None,None], pctile=90, windowHalfWidth=5,
 
     return mhw, clim
 
-
-def monthlyBlockAverage(t, mhw, clim=None, blockLength=1, removeMissing=False, temp=None):
-    '''
-
-    Calculate statistics of marine heatwave (MHW) properties averaged over blocks of
-    a specified length of time. Takes as input a collection of detected MHWs
-    (using the marineHeatWaves.detect function) and a time vector for the source
-    SST series.
-
-    Inputs:
-
-      t       Time vector, in datetime format (e.g., date(1982,1,1).toordinal())
-      mhw     Marine heat waves (MHWs) detected using marineHeatWaves.detect
-
-    Outputs:
-
-      mhwBlock   Time series of block-averaged MHW properties. Each key (following list)
-                 is a list of length N where N is the number of blocks:
-
-        'time_start'          Start year blocks (inclusive)
-        'time_end'            End year of blocks (inclusive)
-        'years_centre'         Decimal year at centre of blocks
-        'count'                Total MHW count in each block
-        'duration'             Average MHW duration in each block [days]
-        'intensity_max'        Average MHW "maximum (peak) intensity" in each block [deg. C]
-        'intensity_max_max'    Maximum MHW "maximum (peak) intensity" in each block [deg. C]
-        'intensity_mean'       Average MHW "mean intensity" in each block [deg. C]
-        'intensity_var'        Average MHW "intensity variability" in each block [deg. C]
-        'intensity_cumulative' Average MHW "cumulative intensity" in each block [deg. C x days]
-        'rate_onset'           Average MHW onset rate in each block [deg. C / days]
-        'rate_decline'         Average MHW decline rate in each block [deg. C / days]
-        'total_days'           Total number of MHW days in each block [days]
-        'total_icum'           Total cumulative intensity over all MHWs in each block [deg. C x days]
-
-        'intensity_max_relThresh', 'intensity_mean_relThresh', 'intensity_var_relThresh',
-        and 'intensity_cumulative_relThresh' are as above except relative to the
-        threshold (e.g., 90th percentile) rather than the seasonal climatology
-
-        'intensity_max_abs', 'intensity_mean_abs', 'intensity_var_abs', and
-        'intensity_cumulative_abs' are as above except as absolute magnitudes
-        rather than relative to the seasonal climatology or threshold
-
-    Options:
-
-      blockLength            Size of block (in years) over which to calculate the
-                             averaged MHW properties. Must be an integer greater than
-                             or equal to 1 (DEFAULT = 1 [year])
-      removeMissing          Boolean switch indicating whether to remove (set = NaN)
-                             statistics for any blocks in which there were missing
-                             temperature values (DEFAULT = FALSE)
-      clim                   The temperature climatology (including missing value information)
-                             as output by marineHeatWaves.detect (required if removeMissing = TRUE)
-      temp                   Temperature time series. If included mhwBlock will output block
-                             averages of mean, max, and min temperature (DEFAULT = NONE)
-
-                             If both clim and temp are provided, this will output annual counts
-                             of moderate, strong, severe, and extreme days.
-
-    Notes:
-
-      This function assumes that the input time vector consists of continuous daily values. Note that
-      in the case of time ranges which start and end part-way through the calendar year, the block
-      averages at the endpoints, for which there is less than a block length of data, will need to be
-      interpreted with care.
-
-    Written by Eric Oliver, Institue for Marine and Antarctic Studies, University of Tasmania, Feb-Mar 2015
-
-    '''
-
-    #
-    # Time and dates vectors, and calculate block timing
-    #
-    # import numpy as np
-    # from datetime import date
-    # Generate vectors for year, month, day-of-month, and day-of-year
-    T = len(t)
-    year = np.zeros((T))
-    month = np.zeros((T))
-    day = np.zeros((T))
-    for i in range(T):
-        year[i] = date.fromordinal(t[i]).year
-        month[i] = date.fromordinal(t[i]).month
-        day[i] = date.fromordinal(t[i]).day
-    time = [date(int(year[i]),int(month[i]),1).toordinal() for i in range(len(year))]
-    # Number of blocks, round up to include partial blocks at end
-    # years = np.unique(year)
-    times = np.unique(time)
-    nBlocks = np.ceil((len(times)) / blockLength).astype(int)
-
-    #
-    # Temperature time series included?
-    #
-
-    sw_temp = None
-    sw_cats = None
-    if temp is not None:
-        sw_temp = True
-        if clim is not None:
-            sw_cats = True
-        else:
-            sw_cats = False
-    else:
-        sw_temp = False
-
-    #
-    # Initialize MHW output variable
-    #
-
-    mhwBlock = {}
-    mhwBlock['count'] = np.zeros(nBlocks)
-    mhwBlock['duration'] = np.zeros(nBlocks)
-    mhwBlock['intensity_max'] = np.zeros(nBlocks)
-    mhwBlock['intensity_max_max'] = np.zeros(nBlocks)
-    mhwBlock['intensity_mean'] = np.zeros(nBlocks)
-    mhwBlock['intensity_cumulative'] = np.zeros(nBlocks)
-    mhwBlock['intensity_var'] = np.zeros(nBlocks)
-    mhwBlock['intensity_max_relThresh'] = np.zeros(nBlocks)
-    mhwBlock['intensity_mean_relThresh'] = np.zeros(nBlocks)
-    mhwBlock['intensity_cumulative_relThresh'] = np.zeros(nBlocks)
-    mhwBlock['intensity_var_relThresh'] = np.zeros(nBlocks)
-    mhwBlock['intensity_max_abs'] = np.zeros(nBlocks)
-    mhwBlock['intensity_mean_abs'] = np.zeros(nBlocks)
-    mhwBlock['intensity_cumulative_abs'] = np.zeros(nBlocks)
-    mhwBlock['intensity_var_abs'] = np.zeros(nBlocks)
-    mhwBlock['rate_onset'] = np.zeros(nBlocks)
-    mhwBlock['rate_decline'] = np.zeros(nBlocks)
-    mhwBlock['total_days'] = np.zeros(nBlocks)
-    mhwBlock['total_icum'] = np.zeros(nBlocks)
-    if sw_temp:
-        mhwBlock['temp_mean'] = np.zeros(nBlocks)
-        mhwBlock['temp_max'] = np.zeros(nBlocks)
-        mhwBlock['temp_min'] = np.zeros(nBlocks)
-
-    # Calculate category days
-    if sw_cats:
-        mhwBlock['moderate_days'] = np.zeros(nBlocks)
-        mhwBlock['strong_days'] = np.zeros(nBlocks)
-        mhwBlock['severe_days'] = np.zeros(nBlocks)
-        mhwBlock['extreme_days'] = np.zeros(nBlocks)
-        cats = np.floor(1 + (temp - clim['thresh']) / (clim['thresh'] - clim['seas']))
-        mhwIndex = np.zeros(t.shape)
-        for ev in range(mhw['n_events']):
-            mhwIndex[mhw['index_start'][ev]:mhw['index_end'][ev] + 1] = 1.
-
-    # Start, end, and centre years for all blocks
-    mhwBlock['time_start'] = times[range(0, len(times), blockLength)] # key point should be modified
-    mhwBlock['time_end'] =  times[range(blockLength, len(times), blockLength)]-1
-    if len(mhwBlock['time_end'])<nBlocks:
-        mhwBlock['time_end'] = np.append(mhwBlock['time_end'],mhwBlock['time_start'][nBlocks-1]+31)
-    mhwBlock['time_centre'] = 0.5 * (mhwBlock['time_start'] + mhwBlock['time_end'])
-
-    #
-    # Calculate block averages
-    #
-
-    for i in range(mhw['n_events']):
-        # Block index for year of each MHW (MHW year defined by start year)
-        iBlock = np.where((mhwBlock['time_start'] <= mhw['time_start'][i]) * (
-                    mhwBlock['time_end'] >= mhw['time_start'][i]))[0][0]
-        # Add MHW properties to block count
-        mhwBlock['count'][iBlock] += 1
-        mhwBlock['duration'][iBlock] += mhw['duration'][i]
-        mhwBlock['intensity_max'][iBlock] += mhw['intensity_max'][i]
-        mhwBlock['intensity_max_max'][iBlock] = np.max([mhwBlock['intensity_max_max'][iBlock], mhw['intensity_max'][i]])
-        mhwBlock['intensity_mean'][iBlock] += mhw['intensity_mean'][i]
-        mhwBlock['intensity_cumulative'][iBlock] += mhw['intensity_cumulative'][i]
-        mhwBlock['intensity_var'][iBlock] += mhw['intensity_var'][i]
-        mhwBlock['intensity_max_relThresh'][iBlock] += mhw['intensity_max_relThresh'][i]
-        mhwBlock['intensity_mean_relThresh'][iBlock] += mhw['intensity_mean_relThresh'][i]
-        mhwBlock['intensity_cumulative_relThresh'][iBlock] += mhw['intensity_cumulative_relThresh'][i]
-        mhwBlock['intensity_var_relThresh'][iBlock] += mhw['intensity_var_relThresh'][i]
-        mhwBlock['intensity_max_abs'][iBlock] += mhw['intensity_max_abs'][i]
-        mhwBlock['intensity_mean_abs'][iBlock] += mhw['intensity_mean_abs'][i]
-        mhwBlock['intensity_cumulative_abs'][iBlock] += mhw['intensity_cumulative_abs'][i]
-        mhwBlock['intensity_var_abs'][iBlock] += mhw['intensity_var_abs'][i]
-        mhwBlock['rate_onset'][iBlock] += mhw['rate_onset'][i]
-        mhwBlock['rate_decline'][iBlock] += mhw['rate_decline'][i]
-        if (mhw['date_start'][i].year == mhw['date_end'][i].year) * \
-                (mhw['date_start'][i].month == mhw['date_end'][i].month):  # MHW in single year
-            mhwBlock['total_days'][iBlock] += mhw['duration'][i]
-        else:  # MHW spans multiple years
-            year_mhws = year[mhw['index_start'][i]:mhw['index_end'][i] + 1]
-            month_mhws = month[mhw['index_start'][i]:mhw['index_end'][i] + 1]
-            time_mhws = [date(year_mhws[ii].astype(int),month_mhws[ii].astype(int),1).toordinal() for ii in range(len(year_mhws))]
-            for time_mhw in np.unique(time_mhws):
-                iBlock = np.where((mhwBlock['time_start'] <= time_mhw) * (mhwBlock['time_end'] >= time_mhw))[0][0]
-                mhwBlock['total_days'][iBlock] += np.sum(time_mhws == time_mhw)
-        # NOTE: icum for a MHW is assigned to its start month, even if it spans mult. years
-        mhwBlock['total_icum'][iBlock] += mhw['intensity_cumulative'][i]
-
-    # Calculation of category days
-    if sw_cats:
-        for i in range(int(nBlocks)):
-            mhwBlock['moderate_days'][i] = (
-                        (time >= mhwBlock['time_start'][i]) * (time <= mhwBlock['time_end'][i]) * mhwIndex * (
-                            cats == 1)).astype(int).sum()
-            mhwBlock['strong_days'][i] = (
-                        (time >= mhwBlock['time_start'][i]) * (time <= mhwBlock['time_end'][i]) * mhwIndex * (
-                            cats == 2)).astype(int).sum()
-            mhwBlock['severe_days'][i] = (
-                        (time >= mhwBlock['time_start'][i]) * (time <= mhwBlock['time_end'][i]) * mhwIndex * (
-                            cats == 3)).astype(int).sum()
-            mhwBlock['extreme_days'][i] = (
-                        (time >= mhwBlock['time_start'][i]) * (time <= mhwBlock['time_end'][i]) * mhwIndex * (
-                            cats >= 4)).astype(int).sum()
-
-    # Calculate averages
-    count = 1. * mhwBlock['count']
-    count[count == 0] = np.nan
-    mhwBlock['duration'] = mhwBlock['duration'] / count
-    mhwBlock['intensity_max'] = mhwBlock['intensity_max'] / count
-    mhwBlock['intensity_mean'] = mhwBlock['intensity_mean'] / count
-    mhwBlock['intensity_cumulative'] = mhwBlock['intensity_cumulative'] / count
-    mhwBlock['intensity_var'] = mhwBlock['intensity_var'] / count
-    mhwBlock['intensity_max_relThresh'] = mhwBlock['intensity_max_relThresh'] / count
-    mhwBlock['intensity_mean_relThresh'] = mhwBlock['intensity_mean_relThresh'] / count
-    mhwBlock['intensity_cumulative_relThresh'] = mhwBlock['intensity_cumulative_relThresh'] / count
-    mhwBlock['intensity_var_relThresh'] = mhwBlock['intensity_var_relThresh'] / count
-    mhwBlock['intensity_max_abs'] = mhwBlock['intensity_max_abs'] / count
-    mhwBlock['intensity_mean_abs'] = mhwBlock['intensity_mean_abs'] / count
-    mhwBlock['intensity_cumulative_abs'] = mhwBlock['intensity_cumulative_abs'] / count
-    mhwBlock['intensity_var_abs'] = mhwBlock['intensity_var_abs'] / count
-    mhwBlock['rate_onset'] = mhwBlock['rate_onset'] / count
-    mhwBlock['rate_decline'] = mhwBlock['rate_decline'] / count
-    # Replace empty years in intensity_max_max
-    mhwBlock['intensity_max_max'][np.isnan(mhwBlock['intensity_max'])] = np.nan
-
-    # Temperature series
-    if sw_temp:
-        for i in range(int(nBlocks)):
-            tt = (time >= mhwBlock['time_start'][i]) * (time <= mhwBlock['time_end'][i])
-            mhwBlock['temp_mean'][i] = np.nanmean(temp[tt])
-            mhwBlock['temp_max'][i] = np.nanmax(temp[tt])
-            mhwBlock['temp_min'][i] = np.nanmin(temp[tt])
-
-    #
-    # Remove years with missing values
-    #
-
-    if removeMissing:
-        missingTime = np.unique(time[np.where(clim['missing'])[0]])
-        for y in range(len(missingTime)):
-            iMissing = \
-            np.where((mhwBlock['time_start'] <= missingTime[y]) * (mhwBlock['time_end'] >= missingTime[y]))[0][0]
-            mhwBlock['count'][iMissing] = np.nan
-            mhwBlock['duration'][iMissing] = np.nan
-            mhwBlock['intensity_max'][iMissing] = np.nan
-            mhwBlock['intensity_max_max'][iMissing] = np.nan
-            mhwBlock['intensity_mean'][iMissing] = np.nan
-            mhwBlock['intensity_cumulative'][iMissing] = np.nan
-            mhwBlock['intensity_var'][iMissing] = np.nan
-            mhwBlock['intensity_max_relThresh'][iMissing] = np.nan
-            mhwBlock['intensity_mean_relThresh'][iMissing] = np.nan
-            mhwBlock['intensity_cumulative_relThresh'][iMissing] = np.nan
-            mhwBlock['intensity_var_relThresh'][iMissing] = np.nan
-            mhwBlock['intensity_max_abs'][iMissing] = np.nan
-            mhwBlock['intensity_mean_abs'][iMissing] = np.nan
-            mhwBlock['intensity_cumulative_abs'][iMissing] = np.nan
-            mhwBlock['intensity_var_abs'][iMissing] = np.nan
-            mhwBlock['rate_onset'][iMissing] = np.nan
-            mhwBlock['rate_decline'][iMissing] = np.nan
-            mhwBlock['total_days'][iMissing] = np.nan
-            if sw_cats:
-                mhwBlock['moderate_days'][iMissing] = np.nan
-                mhwBlock['strong_days'][iMissing] = np.nan
-                mhwBlock['severe_days'][iMissing] = np.nan
-                mhwBlock['extreme_days'][iMissing] = np.nan
-            mhwBlock['total_icum'][iMissing] = np.nan
-
-    return mhwBlock
 
 def annualBlockAverage(t, mhw, clim=None, blockLength=1, removeMissing=False, temp=None):
     '''
